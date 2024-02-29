@@ -13,6 +13,38 @@ import yaml
 import os
 
 
+# min and max state are only needed here for ensebmle model, should use this for all models
+def build_dynamics_model(dynamics_model, min_state=None, max_state=None):    
+    if dynamics_model == "DeltaDynamicsModel":
+        print("Using DeltaDynamicsModel")
+        dynamics_model = DeltaDynamicsModel([256,256,256,256], 1/20, 
+                                        lr=1e-3,
+                                        weight_decay=1e-4)
+    elif dynamics_model == "SimpleDynamicsModel":
+        print("Using SimpleDynamicsModel")
+        dynamics_model = SimpleDynamicsModel(7, 2, [256,256,256,256],
+                                        lr=1e-3,
+                                        weight_decay=1e-4)
+    elif dynamics_model == "ProbDynamicsModel":
+        dynamics_model = ProbDynamicsModel(7,2, [256,256,256,256],
+                                        lr=1e-3,
+                                        weight_decay=1e-4)
+    elif dynamics_model == "ProbsDeltaDynamicsModel":
+        dynamics_model = ProbsDeltaDynamicsModel([256,256,256,256], 1/20, 
+                                        lr=1e-3,
+                                        weight_decay=1e-4,
+                                        min_state=min_state,
+                                        max_state=max_state)
+    elif dynamics_model == "AutoregressiveModel":
+        dynamics_model = AutoregressiveModel(7,2, [256,256,256,256], 
+                                             lr=1e-3,
+                                        weight_decay=1e-4)
+    elif dynamics_model == "EnsemblePDDModel":
+        dynamics_model = ModelBasedEnsemble("ProbsDeltaDynamicsModel", 5, 
+                                            min_state=min_state, 
+                                            max_state=max_state)
+    
+    return dynamics_model
 
 
 class RewardModel(nn.Module):
@@ -144,6 +176,10 @@ class SimpleDynamicsModel(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         self.min_state = None
         self.max_state = None
+    def set_min_state(self, min_state):
+        self.min_state = min_state
+    def set_max_state(self, max_state):
+        self.max_state = max_state
 
     def forward(self, x, u):
         """
@@ -231,13 +267,15 @@ output_keys =  ['poses_x', 'poses_y', 'theta_sin', 'theta_cos', 'ang_vels_z', 'l
 mb_keys = output_keys + ['previous_action_steer', 'previous_action_speed']
 class DeltaDynamicsModel(nn.Module):
     def __init__(self,hidden_size, dt, #min_state, max_state,
-                 lr=1e-4, weight_decay=1e-5):
+                 lr=1e-4, weight_decay=1e-5,
+                 min_state=None,
+                 max_state=None):
         
         super().__init__()
         state_size = len(output_keys)
         action_size = 2
-        self.min_state = None #min_state
-        self.max_state = None # max_state
+        self.min_state = min_state #min_state
+        self.max_state = max_state # max_state
         self.state_size, self.action_size, self.dt = state_size, action_size, dt
         A_size, B_size = state_size * state_size, state_size * action_size
         # hidden layers for A
@@ -256,7 +294,11 @@ class DeltaDynamicsModel(nn.Module):
 
         self.optimizer_dynamics = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         self.column_names = output_keys
-    
+    def set_min_state(self, min_state):
+        self.min_state = min_state
+    def set_max_state(self, max_state):
+        self.max_state = max_state
+
     def _make_layer(self, in_dim, out_dim):
         layer = nn.Linear(in_dim, out_dim)
         init.orthogonal_(layer.weight)
@@ -353,7 +395,7 @@ class AutoregressiveModel(SimpleDynamicsModel):
         self.min_state = None
         self.max_state = None
         self.state_size = state_size
-
+    
     def forward(self,states, actions):
         s_next_states = torch.zeros_like(states)
         for i in range(self.state_size):
@@ -473,16 +515,83 @@ class AutoregressiveDeltaModel(AutoregressiveModel):
         x = x + dx.squeeze()*self.dt
         x_new = torch.clamp(x, self.min_state, self.max_state)
         return x_new
-    
+
+
+class ModelBasedEnsemble(object):
+    def __init__(self, dynamics_network, N, min_state, max_state):
+        # clone the dynamics network
+        self.N = N
+        self.models = [build_dynamics_model(dynamics_network, 
+                                                       min_state=min_state, 
+                                                       max_state=max_state) for _ in range(N)]
+        self.min_state = None # this is a dummy value, since assigning badly the other networks
+        self.max_state = None # this is a dummy value, since assigning badly the other networks
+        # print(self.dynamics_networks.min_state)
+    def __call__(self, x, u):
+        predictions = []
+        for model in self.models:
+            prediction = model(x, u)
+            predictions.append(prediction)
+        # average the predictions
+        predictions = torch.stack(predictions, dim=0).mean(dim=0)
+        return predictions
+    def set_min_state(self, min_state):
+        self.min_state = min_state
+        for model in self.models:
+            model.min_state = min_state
+
+    def set_max_state(self, max_state):
+        self.max_state = max_state
+        for model in self.models:
+            model.max_state = max_state
+
+    def update(self, states, action, next_states):
+        all_loss = 0
+        for i, model in enumerate(self.models):
+            # Sample with replacement to create a bootstrapped batch
+            batch_size = states.size(0)
+            indices = torch.randint(0, batch_size, (batch_size,)).to(self.device)
+            bootstrapped_states = states[indices]
+            bootstrapped_actions = action[indices]
+            bootstrapped_next_states = next_states[indices]
+            #print(bootstrapped_actions.device)
+
+            # Reset gradients for the current model
+            loss, _, _ , _ = model.update(bootstrapped_states, bootstrapped_actions, bootstrapped_next_states)
+            all_loss += loss
+        """
+        if self.dynamics_optimizer_iterations % 10 == 0:
+            self.writer.add_scalar(f"train/loss{i}/xy", loss[0], global_step=self.dynamics_optimizer_iterations)
+            self.writer.add_scalar(f"train/loss{i}/theta", loss[1], global_step=self.dynamics_optimizer_iterations)
+            self.writer.add_scalar(f"train/loss{i}/vel", loss[2], global_step=self.dynamics_optimizer_iterations)
+            self.writer.add_scalar(f"train/loss{i}/progr", loss[3], global_step=self.dynamics_optimizer_iterations)
+            # add mean of all loses
+            #self.writer.add_scaler(f"train/loss{i}/mean", loss[0], global_step=self.dynamics_optimizer_iterations)
+        self.dynamics_optimizer_iterations += 1
+        """
+        return loss, 0, 0, 0
+
+    def set_device(self, device):
+        self.device = device
+        for model in self.models:
+            model.set_device(device)
+    def save(self, path, filename="model_based_torch_checkpoint.pth"):
+        for i, model in enumerate(self.models):
+            model.save(path, filename + f"_{i}")
+    def load(self, path, filename="model_based_torch_checkpoint.pth"):
+        for i, model in enumerate(self.models):
+            model.load(path, filename + f"_{i}")
+        
 
 class ProbsDeltaDynamicsModel(DeltaDynamicsModel):
-    def __init__(self, hidden_size, dt, lr=1e-3, weight_decay=1e-4):
-        super().__init__(hidden_size, dt, lr, weight_decay)
+    def __init__(self, hidden_size, dt, lr=1e-3, weight_decay=1e-4, min_state=None, max_state=None):
+        super().__init__(hidden_size, dt, lr, weight_decay, min_state= min_state, max_state=max_state)
         # replace the last layers with layers that help output the mean and variance
         # hidden layers for A
         self.A_layers[-1] = self._make_layer(hidden_size[-1], self.state_size*self.state_size*2)
         self.B_layers[-1] = self._make_layer(hidden_size[-1], self.state_size*self.action_size*2)
         self.optimizer_dynamics = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
+
 
     def forward(self, x, u , train=False):
         assert self.column_names is not None
@@ -512,11 +621,15 @@ class ProbsDeltaDynamicsModel(DeltaDynamicsModel):
         xu[:, y_column] = 0.0
         xu[:,theta_sin_column] = 0.0  # Remove dependency in theta
         xu[:,theta_cos_column] = 0.0  # Remove dependency in theta
+
         for layer in self.B_layers[:-1]:  # All but the last layer
             xu = F.relu(layer(xu))
         
         B = self.B_layers[-1](xu)  # Last layer
         B = torch.reshape(B, (x.shape[0], self.state_size*2, self.action_size))
+        #x_a = torch.zeros_like(x)
+        #x_a[:,4:] = x[:,4:]
+        # print(x_a[0])
         dx = A @ x.unsqueeze(-1) + B @ u.unsqueeze(-1)
         #print(dx.shape)
         mean = dx[:,0:self.state_size].squeeze()
@@ -576,16 +689,22 @@ class F110ModelBased(object):
         
         # print(self.min_state.shape)
         self.dynamics_model = dynamics_model
-        self.min_state = min_state[0].to(self.device)
-        self.max_state = max_state[0].to(self.device)
+        self.min_state = min_state[0]#.to(self.device)
+        self.max_state = max_state[0]#.to(self.device)
+        # print(self.min_state)
+        self.min_state.to(self.device)
+        self.max_state.to(self.device)
         self.dynamics_model.min_state = self.min_state
         self.dynamics_model.max_state = self.max_state
+        self.dynamics_model.set_min_state(self.min_state)
+        self.dynamics_model.set_max_state(self.max_state)
                             #DynamicsModel(hidden_size, dt, 
                               #              self.min_state, self.max_state, 
                               #              column_names=output_keys,
                               #              lr=learning_rate,
                               #              weight_decay=weight_decay)
-        self.dynamics_model.to(self.device)
+        if self.device == "cuda":
+            self.dynamics_model.to(self.device)
         """
         self.dynamics_model = ModelBasedEnsemble(state_dim, 
                                                    action_dim,
@@ -635,7 +754,10 @@ class F110ModelBased(object):
         masks = masks.to(self.device)
         rewards = rewards.to(self.device)
         original_states = original_states.to(self.device)
-
+        #print(curr_actions.shape)
+        #print(curr_actions.max())
+        #print(curr_actions.min())
+        #print("...")
         loss, _ , _ , _ = self.dynamics_model.update(states_in, curr_actions, next_states_in) #, masks, self.dynamics_optimizer_iterations)
         loss_reward = 0
         loss_done = 0
@@ -656,7 +778,7 @@ class F110ModelBased(object):
         return mse
 
 
-    def __call__(self, states, actions):
+    def __call__(self, states, actions, logvar=False):
         states_in = self.env.get_specific_obs(states, output_keys)
         action_states = self.env.get_specific_obs(states, ['previous_action_steer',
                                                       'previous_action_speed'])
@@ -672,7 +794,13 @@ class F110ModelBased(object):
         
         #print(actions)
         #print(states_in)
-        next_states = self.dynamics_model(states_in, actions)
+        if logvar:
+            # TODO! check if model supports it
+            next_states, logvar = self.dynamics_model(states_in, actions, train=logvar)
+            #next_states = torch.cat((next_states, actions), dim=1)
+            return next_states, logvar
+        else:
+            next_states = self.dynamics_model(states_in, actions)
         #print(next_states)
         # now we need to add the rest of the observations, these are the previous actions
         # lets append the filtered out observations
@@ -693,7 +821,36 @@ class F110ModelBased(object):
         return relevant_states, relevant_column_names
 
 
-    def rollout(self, states, actions, get_target_action=None, horizon=10, batch_size=256, use_dynamics=True):
+
+    def termination_model(self,trajectories, map_path):
+        """
+        @brief takes in normalized states and applies the termination model to each state
+        @trajectories (trajectory, timesteps, state_dim)
+        """
+        # trajectories = self.fn_unnormalize(trajectories, self.relevant_keys)
+        #print(trajectories)
+        #with open(map_path, 'r') as file:
+        #    map_metadata = yaml.safe_load(file)
+        #    map_image_path = os.path.join(os.path.dirname(map_path), map_metadata['image'])
+        #    map_image = Image.open(map_image_path).convert('L')  # Convert to grayscale
+        #map_array = np.array(map_image)
+        terminations = []
+        for trajectory in trajectories:
+            # for each state get the scan
+            laser_scans = self.env.get_laser_scan(trajectory, 20)
+            laser_scans = self.env.normalize_laser_scan(laser_scans)
+            terminations_trajectory ,_ = self.env.termination_scan(trajectory, laser_scans, np.zeros((trajectory.shape[0])))
+            # add the check if we are in/outside the map, propably not needed
+            if np.where(terminations_trajectory==1)[0].size == 0:
+                terminations.append(trajectory.shape[0] + 1)
+            else:
+                terminations.append(np.where(terminations_trajectory==1)[0][0])
+        return np.array(terminations)
+    
+        # for each trajectory
+
+
+    def rollout(self, states, actions=None, get_target_action=None, horizon=10, batch_size=256, use_dynamics=True):
         #print("HI")
         with torch.no_grad():
             states_initial = states[:,0,:]
@@ -748,7 +905,7 @@ class F110ModelBased(object):
     def calculate_progress(self, states):
         from f110_orl_dataset.compute_progress import Progress, Track
         progress_obs_np = np.zeros((states.shape[0],states.shape[1],1))
-        track_path = "/home/fabian/msc/f110_dope/ws_release/f1tenth_gym/gym/f110_gym/maps/Infsaal2/Infsaal2_centerline.csv"
+        track_path = "/home/fabian/msc/f110_dope/ws_release/f1tenth_gym/gym/f110_gym/maps/Infsaal3/Infsaal3_centerline.csv"
         track = Track(track_path)
         progress = Progress(track, lookahead=200)
         pose = lambda traj_num, timestep: np.array([(states[traj_num,timestep,0],states[traj_num,timestep,1])])
@@ -771,7 +928,7 @@ class F110ModelBased(object):
             return mse
 
 
-    def estimate_returns(self, inital_states, get_target_action, map, horizon=250, discount=0.99, batch_size=256, plot=False):
+    def estimate_returns(self, inital_states, get_target_action, map, horizon=250, discount=0.99, batch_size=256, plot=False, done_function=None):
         from f110_orl_dataset.fast_reward import MixedReward
         from f110_orl_dataset.config_new import Config
 
@@ -874,8 +1031,6 @@ class F110ModelBased(object):
 
             return np.mean(discounted_rewards), np.std(discounted_rewards)
             
-
-
 
     def plot_trajectories_on_map(self, yaml_path, poses):
         # Load map metadata

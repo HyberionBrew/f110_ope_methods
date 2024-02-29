@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import os
 
-def create_save_dir(experiment_directory="test",algo="mb", reward_name="reward", dataset="f110-test", trajectory_length="250", target_policy="FTG"):
+def create_save_dir(experiment_directory="test",algo="mb", reward_name="reward", dataset="f110-test", trajectory_length="250", target_policy="FTG", seed="1"):
     save_directory = os.path.join(experiment_directory)
     if not os.path.exists(save_directory):
       os.makedirs(save_directory)
@@ -12,7 +12,7 @@ def create_save_dir(experiment_directory="test",algo="mb", reward_name="reward",
     if not os.path.exists(save_directory):
       os.makedirs(save_directory)
     # path
-    save_directory = os.path.join(save_directory, f"{dataset}_{reward_name}")
+    save_directory = os.path.join(save_directory, f"{dataset}")
     if not os.path.exists(save_directory):
       os.makedirs(save_directory)
 
@@ -22,6 +22,10 @@ def create_save_dir(experiment_directory="test",algo="mb", reward_name="reward",
       os.makedirs(save_directory)
     # now the target policy directory
     save_directory = os.path.join(save_directory, f"{target_policy}")
+    if not os.path.exists(save_directory):
+      os.makedirs(save_directory)
+      # add seed
+    save_directory = os.path.join(save_directory, f"{seed}")
     if not os.path.exists(save_directory):
       os.makedirs(save_directory)
     return save_directory
@@ -37,12 +41,16 @@ class F110Dataset(Dataset):
                state_mean=None,
                state_std = None,
                reward_mean = None,
-               reward_std = None,):
+               reward_std = None,
+               train_only=False,
+               eval_only=False):
         # Load the dataset
 
         d4rl_dataset = d4rl_env.get_dataset(
             remove_agents=remove_agents, 
             only_agents=only_agents,
+            train_only=train_only,
+            eval_only=eval_only,
         )
         # Assuming 'observations' and 'next_observations' are keys in the dataset
         #self.observations = self.data['observations']
@@ -54,7 +62,8 @@ class F110Dataset(Dataset):
         self.model_names = np.array(d4rl_dataset['model_name'])
         self.scans = torch.from_numpy(d4rl_dataset['scans'].astype(np.float32))
         self.actions = torch.from_numpy(d4rl_dataset['actions'].astype(np.float32))
-        # self.raw_actions = torch.from_numpy(d4rl_dataset['raw_actions'].astype(np.float32))
+        self.next_actions = None # assign this if needed
+                # self.raw_actions = torch.from_numpy(d4rl_dataset['raw_actions'].astype(np.float32))
         self.rewards = torch.from_numpy(d4rl_dataset['rewards'].astype(np.float32))
         self.masks = torch.from_numpy(1.0 - d4rl_dataset['terminals'].astype(np.float32))
         self.log_probs = torch.from_numpy(d4rl_dataset['log_probs'].astype(np.float32))
@@ -63,6 +72,9 @@ class F110Dataset(Dataset):
         # now we need to do next states and next scans
         # first check where timeout and where terminal
         finished = np.logical_or(d4rl_dataset['terminals'], d4rl_dataset['timeouts'])
+        print(np.sum(d4rl_dataset['terminals']))
+        print(np.sum(d4rl_dataset['timeouts']))
+        print("..")
         self.finished = finished
         # rolled finished to the right by 1
         finished = torch.from_numpy(finished)
@@ -180,11 +192,39 @@ class F110Dataset(Dataset):
         reward = self.rewards[idx]
         mask = self.masks[idx]
         log_prob = self.log_probs[idx]
+        if self.next_actions is not None:
+            next_action = self.next_actions[idx]
+            return current_state, scan, action, next_state, next_scan, reward, mask, 1.0, log_prob, next_action
         #timestep = self.timesteps[idx]
         # Include other components like actions, rewards, etc. if needed
         return current_state, scan, action, next_state, next_scan, reward, mask, 1.0, log_prob 
     
+    def get_only_indices(self, indices):
+        self.states = self.states[indices]
+        self.model_names = self.model_names[indices]
+        self.scans = self.scans[indices]
+        self.actions = self.actions[indices]
+        self.rewards = self.rewards[indices]
+        self.masks = self.masks[indices]
+        self.finished = self.finished[indices]
+        self.mask_inital = self.mask_inital[indices]
+        self.log_probs = self.log_probs[indices]
+        self.states_next = self.states_next[indices]
+        self.scans_next = self.scans_next[indices]
+        self.rewards_next = self.rewards_next[indices]
+        # recompute the initial states, based on the new finished indices
+        print(self.finished.shape)
+        finished_indices = np.where(self.finished)[0]
+        self.inital_states = torch.zeros((len(finished_indices), self.states.shape[-1]))
+        self.initial_scans = torch.zeros((len(finished_indices), self.scans.shape[-1]))
+        for i, stop in enumerate(finished_indices):
+            self.initial_states[i] = self.states[stop]
+            self.initial_scans[i] = self.scans[stop]
+        return self
+    
 
+        
+        
 def random_split_trajectories(dataset, train_size=0.7, test_size=0.2, val_size=0.1):
     assert abs(train_size + test_size + val_size - 1) < 1e-6, "The sum of the sizes must equal 1"
 
@@ -230,7 +270,7 @@ def random_split_indices(dataset_length, train_size=0.7, test_size=0.2, val_size
 
     return train_indices, test_indices, val_indices
 
-def model_split_indices(dataset, train_size=0.6, test_size=0.3, val_size = 0.1,  train_model_names=None):
+def model_split_indices(dataset, train_size=0.6, test_size=0.3, val_size = 0.1,  train_model_names=None, test_model_names=None, val_model_names=None):
     """
     Splits the dataset indices based on specified model names for test, validation, and training sets.
 
@@ -240,6 +280,9 @@ def model_split_indices(dataset, train_size=0.6, test_size=0.3, val_size = 0.1, 
     :param train_model_names: Optional array of model names to include in the training set. If None, use the rest.
     :return: Indices for train_set, test_set, val_set.
     """
+    if train_model_names is not None:
+        assert test_model_names is not None, "If train_model_names is specified, test_model_names must also be specified."
+        assert val_model_names is not None, "If train_model_names is specified, val_model_names must also be specified."
     if train_model_names is None:
         unique_model_names = np.unique(dataset.model_names)
         print("Available models:", unique_model_names)
