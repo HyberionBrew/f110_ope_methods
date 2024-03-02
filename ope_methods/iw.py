@@ -21,14 +21,15 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
 
                                      start_prob_method = "l2",
                                      discount=0.99,
-                                     plot=False):
+                                     plot=False,
+                                     agent_name=""):
     
     #behavior_log = np.clip(behavior_log, -7, 2)
     #target_log = np.clip(target_log, -7, 2)
     #print(behavior_log.shape)
     #print(target_log.shape)
     log_diff = target_log - behavior_log
-    log_diff[log_diff > 0] = 0
+    #log_diff[log_diff > 0] = 0
     log_diff = to_equal_length(log_diff, terminations)
     # add the discount sum in the log space
     # 0.99**i
@@ -53,7 +54,7 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
     unique_agents = np.unique(behavior_agent_names)
     color_map = {agent: colors[i] for i, agent in enumerate(unique_agents)}
     if plot:
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(15, 12), dpi=100)
 
         for ag_idx, agent in enumerate(unique_agents):
             agents_idxs = np.where(behavior_agent_names == str(agent))[0]
@@ -68,15 +69,16 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         handles = [plt.Rectangle((0, 0), 1, 1, color=color_map[label]) for label in labels]
         plt.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), title="Agents")
         # y (0, -1200)
-        plt.ylim(-1200, 0)
+        plt.ylim(-1200, 100)
         # add x-axis label
         plt.xlabel("Episode Timesteps")
         plt.ylabel("Cumulative Log Importance Weight")
         plt.subplots_adjust(right=0.7)  # Adjust as necessary to fit the legend outside the plot
-
+        plt.title(f"Log Importance Weight for {agent_name}")
         plt.show()
+        #plt.savefig(f"iw_prob_plots/{agent_name}_log_importance_weight.png")
 
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(15, 12), dpi=100)
         for ag_idx, agent in enumerate(unique_agents):
             agents_idxs = np.where(behavior_agent_names == str(agent))[0]
             for agent_idx in agents_idxs:
@@ -86,7 +88,7 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
                 
                 logdiff_clip = log_diff.copy()
                 logdiff_clip = np.exp(logdiff_clip) 
-                logdiff_clip[logdiff_clip > 1] = 1
+                #logdiff_clip[logdiff_clip > 1] = 1
                 #logdiff_clip[logdiff_clip > 0] = 0
                 plt.plot(np.cumprod(logdiff_clip[agent_idx, :]), color=color_map[agent])
         labels = list(color_map.keys())
@@ -96,7 +98,8 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         plt.xlabel("Episode Timesteps")
         plt.ylabel("Cumulative Log Importance Weight (EXP)")
         plt.subplots_adjust(right=0.7)  # Adjust as necessary to fit the legend outside the plot
-
+        plt.title(f"EXP Log Importance Weight for {agent_name}")
+        #plt.savefig(f"iw_prob_plots/{agent_name}_exp_log_importance_weight.png")
         plt.show()
     
     # since we have very large sums of logprobs, the weighted importance sampling 
@@ -126,7 +129,7 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
             #plt.scatter(start[0], start[1], color="red")
             #plt.legend(["Training Starts", "Evaluation Starts", "in question"])
             #plt.show()
-            print("No starts within the distance dropping this starting state! Might be slightly inconsistent with evaluation now!")
+
             continue
         else:
             if len(np.where(distances < start_distance)[0]) < 10:
@@ -137,7 +140,7 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         # for each of the close point find we dont need the check
         max_log_sum = -np.inf
         for point in close_points_idx:
-        #    print(point)
+            #print(point)
             #plt.plot(log_cumsum[point], label=behavior_agent_names[point])
             if log_cumsum[point,-1] > max_log_sum and terminations[point] > 25:
                 max_log_sum = log_cumsum[point,-1]
