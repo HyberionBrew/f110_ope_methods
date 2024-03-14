@@ -341,11 +341,12 @@ class QFitterDD(QFitterBase):
         #print("inside results", final_result)
         return logits
     
-    def estimate_returns(self, initial_states, initial_actions,scans=None, plot=False):
+    def estimate_returns(self, initial_states, initial_actions,scans=None, plot=False, get_q_vals=False):
 
         with torch.no_grad():
             initial_actions = initial_actions.cuda()
             initial_states = initial_states.cuda()
+
             preds = self(initial_states, initial_actions)
             # get index of the maximum value of the distribution
             # convert preds to softmax
@@ -377,12 +378,40 @@ class QFitterDD(QFitterBase):
                 # save the fig
 
                 plt.savefig(f"plots/histogram_{self.optimizer_iterations}.png")
+                # plt.show()
                 plt.close()
+                """
+                # for plotting
+                for i in range(10):
+                    import seaborn as sns
+                    plt.rcParams.update({
+                        'text.usetex': True,
+                        'font.family': 'serif',
+                    })
+                    sns.set_theme(style="whitegrid")
+
+                    plt.plot(likelihood[i].cpu())
+                    # plt.savefig(f"plots/likelihood_{self.optimizer_iterations}_{i}.png")
+                    # max 2 after comma
+                    x_value = initial_states[i].cpu().numpy()[0]
+                    y_value = initial_states[i].cpu().numpy()[1]
+
+                    plt.title(f"Return Likelihood for starting position x={x_value:.2f} y={y_value:.2f}")
+                    plt.xlabel("Estimated Return")
+                    plt.ylabel("Likelihood")
+                    plt.savefig(f"plots/likelihood_sp_{i}.pdf")
+                    plt.show()
+                    plt.close()
+                """
+                
                 
 
             # print("Singular", preds)
             mean = torch.mean(preds)
+
             std = torch.std(preds)
+        if get_q_vals:
+            return mean, std, preds
         return mean, std
     
 
@@ -397,13 +426,28 @@ class QFitterDD(QFitterBase):
             next_actions = next_actions.cuda()
             rewards = rewards.cuda()
             masks = masks.cuda()
-
+        # assert no nans and infs in states and actions and next states
+        assert torch.isnan(states).sum() == 0
+        assert torch.isnan(actions).sum() == 0
+        assert torch.isnan(next_states).sum() == 0
+        assert torch.isnan(next_actions).sum() == 0
+        assert torch.isinf(states).sum() == 0
+        assert torch.isinf(actions).sum() == 0
+        assert torch.isinf(next_states).sum() == 0
+        assert torch.isinf(next_actions).sum() == 0
         self.optimizer.zero_grad()
         # implementation similar to
         # https://github.com/facebookresearch/ReAgent/blob/main/reagent/training/c51_trainer.py#L120
         with torch.no_grad():
             logit_probs = self.critic_target(next_states, next_actions) 
+            # assert no infs and nans
+            assert torch.isnan(logit_probs).sum() == 0
+            assert torch.isinf(logit_probs).sum() == 0
             pmfs = torch.softmax(logit_probs, dim=-1)
+
+            # assert no infs and nans
+            assert torch.isnan(pmfs).sum() == 0
+            assert torch.isinf(pmfs).sum() == 0
             # self.support
             """
             print(rewards.unsqueeze(-1).shape)
@@ -432,9 +476,23 @@ class QFitterDD(QFitterBase):
             for i in range(target_pmfs.size(0)):
                 target_pmfs[i].index_add_(0, l[i].long(), d_m_l[i])
                 target_pmfs[i].index_add_(0, u[i].long(), d_m_u[i])
+        # clamp the target pmfs
+        target_pmfs = target_pmfs.clamp(min=1e-5, max=1 - 1e-5)
+        #plt.plot(target_pmfs[0].cpu())
+        # plt.show()
+        # assert no nans in target_pmfs
+        assert torch.isnan(target_pmfs).sum() == 0
+        assert torch.isinf(target_pmfs).sum() == 0
 
         curr_atoms = self.critic(states, actions) 
+        # assert no nans in curr_atoms
+        assert torch.isnan(curr_atoms).sum() == 0
+        # asssert no infs
+        assert torch.isinf(curr_atoms).sum() == 0
         curr_pmfs = torch.softmax(curr_atoms, dim=-1)
+        # assert no nans in curr_pmfs
+        assert torch.isnan(curr_pmfs).sum() == 0
+        assert torch.isinf(curr_pmfs).sum() == 0
         # critic_loss = torch.sum((target_q - q) ** 2)
         #print(target_pmfs[0])
         #print(curr_pmfs[0])

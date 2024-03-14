@@ -43,7 +43,14 @@ def build_dynamics_model(dynamics_model, min_state=None, max_state=None):
         dynamics_model = ModelBasedEnsemble("ProbsDeltaDynamicsModel", 5, 
                                             min_state=min_state, 
                                             max_state=max_state)
-    
+    elif dynamics_model == "EnsembleSDModel":
+        dynamics_model = ModelBasedEnsemble("SimpleDynamicsModel", 5, 
+                                            min_state=min_state, 
+                                            max_state=max_state)
+    elif dynamics_model == "EnsembleARModel":
+        dynamics_model = ModelBasedEnsemble("AutoregressiveModel", 5, 
+                                            min_state=min_state, 
+                                            max_state=max_state)
     return dynamics_model
 
 
