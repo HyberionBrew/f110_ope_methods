@@ -51,6 +51,17 @@ def build_dynamics_model(dynamics_model, min_state=None, max_state=None):
         dynamics_model = ModelBasedEnsemble("AutoregressiveModel", 5, 
                                             min_state=min_state, 
                                             max_state=max_state)
+    elif dynamics_model == "EnsembleARDModel":
+        dynamics_model = ModelBasedEnsemble("AutoregressiveDeltaModel", 5, 
+                                            min_state=min_state, 
+                                            max_state=max_state)
+    elif dynamics_model == "AutoregressiveDeltaModel":
+        dynamics_model = AutoregressiveDeltaModel([256,256,256,256], 1/20,
+                                                  lr=1e-3,
+                                        weight_decay=1e-4,
+                                        min_state=min_state,
+                                        max_state=max_state)
+    
     return dynamics_model
 
 
@@ -457,13 +468,17 @@ class AutoregressiveModel(SimpleDynamicsModel):
         return total_loss.item(), 0, 0, 0
 
 
-class AutoregressiveDeltaModel(AutoregressiveModel):
-    def __init__(self, hidden_size, dt, lr=1e-3, weight_decay=1e-4):
-        super().__init__(hidden_size, dt, lr, weight_decay)
+class AutoregressiveDeltaModel(nn.Module):
+    def __init__(self, hidden_size, dt, lr=1e-3, weight_decay=1e-4,
+                 min_state=None,
+                 max_state=None):
+        super(AutoregressiveDeltaModel, self).__init__()
         state_size = len(output_keys)
         action_size = 2
-        self.min_state = None #min_state
-        self.max_state = None # max_state
+        self.min_state = min_state #min_state
+        self.max_state = max_state # max_state
+        assert min_state is not None
+        assert max_state is not None
         self.state_size, self.action_size, self.dt = state_size, action_size, dt
         A_size, B_size = state_size * state_size, state_size * action_size
         # hidden layers for A
@@ -471,19 +486,103 @@ class AutoregressiveDeltaModel(AutoregressiveModel):
         self.A_layers.append(self._make_layer(state_size * 3 + action_size, hidden_size[0]))
         for i in range(1, len(hidden_size)):
             self.A_layers.append(self._make_layer(hidden_size[i-1], hidden_size[i]))
-        self.A_layers.append(self._make_layer(hidden_size[-1], 1))
+        self.A_layers.append(self._make_layer(hidden_size[-1], A_size*2))
 
         # hidden layers for B
         self.B_layers = nn.ModuleList()
         self.B_layers.append(self._make_layer(state_size * 3 + action_size, hidden_size[0]))
         for i in range(1, len(hidden_size)):
             self.B_layers.append(self._make_layer(hidden_size[i-1], hidden_size[i]))
-        self.B_layers.append(self._make_layer(hidden_size[-1], 1))
+        self.B_layers.append(self._make_layer(hidden_size[-1], B_size*2))
 
         self.optimizer_dynamics = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
-        self.coloumn_names = output_keys
+        self.column_names = output_keys
+    # the below 4 function should probably be a common parent
+    def set_min_state(self, min_state):
+        self.min_state = min_state
+    def set_max_state(self, max_state):
+        self.max_state = max_state
 
-    def forward(self, x, u):
+    def _make_layer(self, in_dim, out_dim):
+        layer = nn.Linear(in_dim, out_dim)
+        init.orthogonal_(layer.weight)
+        return layer
+    
+    def set_device(self, device):
+        self.device = device
+        self.min_state = self.min_state.to(device)
+        self.max_state = self.max_state.to(device)
+        self.to(device)
+
+    def save(self, path, filename="model_based_torch_checkpoint.pth"):
+        torch.save(self.state_dict(), os.path.join(path, filename))
+
+        
+    def load(self, path, filename="model_based_torch_checkpoint.pth"):
+        self.load_state_dict(torch.load(os.path.join(path, filename)))
+
+    def forward(self,states, actions):
+        s_next_states = torch.zeros_like(states)
+        for i in range(self.state_size):
+            # build the input
+            # one hot encode i 
+            s_one_hot = torch.zeros(states.shape[0], self.state_size)
+            # Set the ith position to 1
+            s_one_hot[:, i] = 1
+            # incase i is the theta_sin:
+            if i == self.column_names.index('theta_cos'):
+                continue
+            if i == self.column_names.index('theta_sin'):
+                s_one_hot[:, self.column_names.index('theta_cos')] = 1
+            input_states = torch.cat((states, s_next_states, s_one_hot), dim=1)
+            #print(f"{self.column_names[i]}")
+            #print(input_states.shape)
+            #print(actions.shape)
+            #print(i)
+            if i == self.column_names.index('theta_sin'):
+                 s_next_states[:,i:i+2] = self.single_pass(input_states, actions, i)#[:,i:i+2]
+            else:
+                s_next_states[:,i] = self.single_pass(input_states, actions, i)#[:,i]
+            #print(s_next_states)
+        return s_next_states
+    
+    def update(self, states, actions, next_states):
+        self.optimizer_dynamics.zero_grad()
+        total_loss = 0
+        for i in range(self.state_size):
+            # build the input
+            # one hot encode i 
+            s_one_hot = torch.zeros(states.shape[0], self.state_size, device=self.device)
+            # Set the ith position to 1
+            s_one_hot[:, i] = 1
+            s_next_state = next_states.clone()
+            s_next_state[:,i:] = 0.0
+            if i == self.column_names.index('theta_cos'):
+                continue
+            if i == self.column_names.index('theta_sin'):
+                s_one_hot[:, self.column_names.index('theta_cos')] = 1
+                target = next_states[:,i:i+2]
+            else:
+                target = next_states[:,i]
+            #print(s_one_hot)
+            #print(s_next_state)
+            input_states = torch.cat((states, s_next_state, s_one_hot), dim=1)
+            mean, logvar = self.single_pass(input_states, actions,i, train=True)
+
+            cov_matrix = torch.diag_embed(torch.exp(logvar))
+            normal_distribution = torch.distributions.MultivariateNormal(mean, cov_matrix)
+            #print(target.shape)
+            #print(mean.shape)
+            #print(logvar.shape)
+            #print(cov_matrix.shape)
+            log_prob = normal_distribution.log_prob(target)
+            loss = -log_prob.mean()
+            total_loss += loss
+        total_loss.backward()
+        self.optimizer_dynamics.step()
+        return total_loss.item(), 0, 0, 0
+
+    def single_pass(self, x, u, i, train = False):
         """
         Predict x_{t+1} = f(x_t, u_t)
         :param x: a batch of states
@@ -496,32 +595,63 @@ class AutoregressiveDeltaModel(AutoregressiveModel):
         # set the x and y states to 0 
         x_column = self.column_names.index('poses_x')
         y_column = self.column_names.index('poses_y')
-
+        theta_sin_column = self.column_names.index('theta_sin')
+        theta_cos_column = self.column_names.index('theta_cos')
+        
         xu[:,x_column] = 0.0  # Remove dependency in (x,y)
         xu[:,y_column] = 0.0  # Remove dependency in (x,y)
-        xu[:,x_column + self.state_size] = 0.0  # Remove dependency in (x,y) (next_state)
-        xu[:,y_column + self.state_size] = 0.0  # Remove dependency in (x,y) (next_state)
-
+        #xu[:,x_column + self.state_size] = 0.0  # Remove dependency in (x,y) (next_state)
+        #xu[:,y_column + self.state_size] = 0.0  # Remove dependency in (x,y) (next_state)
+        xu[:,theta_sin_column] = 0.0  # Remove dependency in theta
+        xu[:,theta_cos_column] = 0.0  # Remove dependency in theta  # Remove dependency in (x,y)
+ 
         for layer in self.A_layers[:-1]:
             xu = F.relu(layer(xu))
 
         A = self.A_layers[-1](xu)  # Last layer
-        A = torch.reshape(A, (x.shape[0], 1))
+        A = torch.reshape(A, (x.shape[0], self.state_size*2, self.state_size))
         
         # Reset and pass through B hidden layers
         xu = torch.cat((x, u), -1)
         xu[:, x_column] = 0.0
         xu[:, y_column] = 0.0
+        xu[:,theta_sin_column] = 0.0  
+        xu[:,theta_cos_column] = 0.0 
         for layer in self.B_layers[:-1]:  # All but the last layer
             xu = F.relu(layer(xu))
         
         B = self.B_layers[-1](xu)  # Last layer
-        B = torch.reshape(B, (x.shape[0], 1))
+        B = torch.reshape(B, (x.shape[0], self.state_size*2, self.action_size))
+        state = x[:,0:self.state_size]
+        dx = A @ state.unsqueeze(-1) + B @ u.unsqueeze(-1)
+        #mean = dx[:,0:self.state_size].squeeze()
+        #print("----")
+
+        logvar = dx[:,self.state_size:].reshape(-1, self.state_size)
+        #print(logvar.shape)
+        #print(state.shape)
         
-        dx = A @ x.unsqueeze(-1) + B @ u.unsqueeze(-1)
-        x = x + dx.squeeze()*self.dt
-        x_new = torch.clamp(x, self.min_state, self.max_state)
-        return x_new
+        mean = state + dx[:,0:self.state_size].squeeze()*self.dt
+        #print(mean.shape)
+        # normalize the theta, it should sum to 1
+        theta_sin_cos_norm = torch.sqrt(mean[:, theta_sin_column]**2 + mean[:, theta_cos_column]**2)
+        new_mean = mean.clone()
+        new_mean[:, theta_sin_column] = mean[:, theta_sin_column] / theta_sin_cos_norm
+        new_mean[:, theta_cos_column] = mean[:, theta_cos_column] / theta_sin_cos_norm
+        x_new = torch.clamp(new_mean, self.min_state, self.max_state)
+        if i == self.column_names.index('theta_sin'):
+            return_mean =  x_new[:, theta_sin_column:theta_cos_column+1]
+            return_logvar = logvar[:, theta_sin_column:theta_cos_column+1]        
+        else:
+            return_mean = x_new[:,i]
+            #print(i)
+            #print(logvar.shape)
+            return_logvar = logvar[:,i]
+    
+        if train:
+            return return_mean, return_logvar
+        else:
+            return return_mean
 
 
 class ModelBasedEnsemble(object):

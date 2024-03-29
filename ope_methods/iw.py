@@ -124,6 +124,26 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
                         ]
         colors =  plt.cm.tab20(np.linspace(0, 1, len(np.unique(agents_plot))))
         color_map = {agent: colors[i] for i, agent in enumerate(np.unique(agents_plot))}
+        for ag_idx, agent in enumerate(reversed(agents_plot)):
+            print(agent)
+            agents_idxs = np.where(behavior_agent_names == str(agent))[0]
+            for agent_idx in agents_idxs:
+                #if terminations[agent_idx] < 25:
+                #    continue
+                # Exponentiate the log cumulative sum values
+                #exp_cumsum = np.exp(log_cumsum[agent_idx, :])
+                #plt.plot(log_diff[:int(terminations[agent_idx]+1)], color=color_map[agent], alpha=0.4) #
+                # plot a histogram of the log_diff
+                plt.hist(log_diff[agent_idx, :int(terminations[agent_idx]+1)], bins=100, color=color_map[agent], alpha=0.4)
+                # plot a line for the mean and std deviation across x axis 
+                plt.axvline(np.mean(log_diff[agent_idx, :int(terminations[agent_idx]+1)]), color=color_map[agent], linestyle="--")
+                #plt.axvline(np.mean(log_diff[agent_idx, :int(terminations[agent_idx]+1)]) + np.std(log_diff[agent_idx, :int(terminations[agent_idx]+1)]), color=color_map[agent], linestyle="--", alpha=0.6)
+                #plt.axvline(np.mean(log_diff[agent_idx, :int(terminations[agent_idx]+1)]) - np.std(log_diff[agent_idx, :int(terminations[agent_idx]+1)]), color=color_map[agent], linestyle="--", alpha=0.6)
+        # x-axis is the log-prob
+        plt.xlabel("Log Probability")
+        plt.ylabel("Frequency")
+        plt.title(f"Log Probability Distribution for target agent\n {agent_name}")
+        plt.show()
         for ag_idx, agent in enumerate(agents_plot):
             print(agent)
             agents_idxs = np.where(behavior_agent_names == str(agent))[0]
