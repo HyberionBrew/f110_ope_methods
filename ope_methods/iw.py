@@ -57,6 +57,8 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
     #target_log = np.clip(target_log, -7, 2)
     #print(behavior_log.shape)
     #print(target_log.shape)
+    # set all rewards to zero after termination
+    rewards = to_equal_length_value(rewards, terminations, 0.0)
 
     log_diff = target_log - behavior_log
     # assert no nans in logdiff
@@ -292,6 +294,10 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
             is_fn = simple_step_is
         elif iw_type == "cobs_wis":
             is_fn = cobs_wis
+        elif iw_type == "phwis":
+            is_fn = phwis
+        elif iw_type == "phwis_heuristic":
+            is_fn = phwis_heuristic
         else:
             raise NotImplementedError("Unknown importance sampling type")
         
@@ -344,6 +350,59 @@ def step_wis(log_diff, terminations, rewards, discount, fill_value=0.0):
     plt.show()
     return np.sum(acc_rewards)
 """
+def phwis_heuristic(log_diff, terminations, rewards, discount):
+    return phwis(log_diff, terminations, rewards, discount, heuristic=True)
+
+def phwis(log_diff, terminations, rewards, discount, heuristic=False):
+    # is simply one extended
+    log_diff = log_diff.astype(np.longfloat)
+    # set logdiff to zero for all timesteps after termination (corresponds to one extended)
+    log_diff = to_equal_length_value(log_diff, terminations, 0.0)
+    # loop over timesteps
+    prob_cumprod = np.exp(np.cumsum(log_diff, axis=1))
+    reward = 0.0
+    """
+    for r in range(rewards.shape[0]):
+        # skip if no termination
+        if terminations[r] > 100:
+            continue
+        plt.plot(rewards[r])
+        # plot a 10 at the termination
+        plt.plot(terminations[r], rewards[r, int(terminations[r])], "ro")
+    plt.show()
+    """
+    #raise ValueError("Not implemented, properly, check the t t+1")
+    all_reward = np.zeros((log_diff.shape[1]))
+    #print(max(terminations))
+    all_bitmask = 0
+    for t in range(log_diff.shape[1]):
+        # select all that terminate at this timestep
+        # compute Wl
+        bit_maks_term = terminations == t
+        all_bitmask += sum(bit_maks_term)
+        Wl_nominator = np.sum(prob_cumprod[bit_maks_term, t])
+        if heuristic and t > 0:
+            Wl_nominator = np.sum(prob_cumprod[bit_maks_term, t])**(1/(t))
+        Wl_denominator = np.sum(np.sort(prob_cumprod[:, t]))
+        Wl = Wl_nominator / Wl_denominator        
+        # inner sum
+        w_nominator_weights = prob_cumprod[bit_maks_term, t]
+        w_nominator_rewards = np.sum(rewards[bit_maks_term, :t] * discount ** np.arange(t), axis=1)
+        w_nominator = np.sum(w_nominator_weights * w_nominator_rewards)
+        if prob_cumprod[bit_maks_term, t].shape[0] == 0:
+            continue
+        w_denominator = np.sum(prob_cumprod[bit_maks_term, t])
+        w = w_nominator / w_denominator
+        reward += Wl * w
+        all_reward[t] = Wl * w
+
+    assert all_bitmask == len(terminations)
+    #plt.plot(all_reward)
+    
+    #plt.show()
+    
+    return reward.astype(np.float32)
+
 def step_wis_termination(log_diff, terminations, rewards, discount):
     # cast to float 64
     #for i in range(log_diff.shape[0]):
