@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import torch
 plt.rcParams.update({
     'text.usetex': True,
     'font.family': 'serif',
@@ -42,13 +43,18 @@ def to_equal_length_value(log_diff, terminations, value):
 
 def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_names,
                                      terminations, rewards,
-                                     starts,starts_eval, start_distance,
+                                     starts_,starts_eval_, start_distance,
                                      start_prob_method = "l2",
                                      discount=0.99,
                                      plot=False,
                                      agent_name="",
                                      iw_type="wis",
-                                     fill_type = "mean"):
+                                     fill_type = "mean",
+                                     get_actions=None,
+                                     model=None,
+                                     start_scans=None,
+                                     normalize_states=None,
+                                     ):
     """
     Terminations are inclusive
     """
@@ -248,8 +254,8 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         
     # since we have very large sums of logprobs, the weighted importance sampling 
     # simply degenerates into being ~1 at the closest trajectory and zero elsewhere.
-    starts_eval = starts_eval[:, :2] # only need x and yq
-    starts = starts[:, :2]
+    starts_eval = starts_eval_[:, :2] # only need x and yq
+    starts = starts_[:, :2]
     # plot all starts 
     #plt.scatter(starts[:, 0], starts[:, 1])
     #plt.scatter(starts_eval[:, 0], starts_eval[:, 1])
@@ -259,7 +265,8 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
     reward = 0
     num_rewards = 0
     picked_agents = []
-    for start in starts_eval:
+
+    for starting_idx, start in enumerate(starts_eval):
         # compute the distance to all starting points
         distances = np.linalg.norm(starts - start, axis=1)
         # print the closest 10 starts 
@@ -304,7 +311,30 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
 
         discounted_reward = is_fn(log_diff[close_points_idx], terminations[close_points_idx], rewards[close_points_idx], discount)
         
+        if model is not None and start_scans is not None and get_actions is not None:
+            complete_offset = 0
+            # complete_offset2 = 0
+            samples = 20
+            #print(len(starts_[close_points_idx]))
+            #print(len(start_scans[close_points_idx]))
+            for i in range(samples):
+                normed_starts = normalize_states(torch.tensor(starts_[close_points_idx]))
+                actions_eval = get_actions(normed_starts, 
+                                            scans = torch.tensor(start_scans[close_points_idx]), 
+                                            deterministic=False)
+                eval_starts = normalize_states(torch.tensor(starts_eval_[starting_idx]).unsqueeze(0))
 
+                #action_test = get_actions(eval_starts,deterministic=True)
+
+                offset, std_offset = model.estimate_returns(normed_starts.cuda(), torch.tensor(actions_eval).cuda())
+                #offset2, std_offset = model.estimate_returns(eval_starts.cuda(), torch.tensor(action_test).cuda())
+                
+                complete_offset += offset.cpu().detach().numpy()
+                # this was for testing only
+                #complete_offset2 += offset2.cpu().detach().numpy()
+            discounted_reward += complete_offset / samples
+            #print(complete_offset2 / samples)
+            #print(complete_offset / samples)
         #print(max_log_sum)
         #print(max_log_sum_point)
         #plt.plot(rewards[max_log_sum_point])
