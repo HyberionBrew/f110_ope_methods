@@ -16,14 +16,6 @@ def to_equal_length_mean(log_diff, terminations, inital_skips=15, fill_value=-np
             result_log_diff[i, int(terminations[i]) + 1:] = fill_value
         else:
             result_log_diff[i, int(terminations[i]) + 1:] = np.mean(log_diff[i, inital_skips :int(terminations[i])+1])
-        # no nan#
-        #print(terminations[i])
-        #print(log_diff[i])
-
-        #print(result_log_diff[i])
-        #print(inital_skips)
-        #print(int(terminations[i]) + 1)
-        #print(log_diff[i, inital_skips :int(terminations[i])+1])
         assert (np.isnan(result_log_diff[i]) == False).all()
     return result_log_diff
 
@@ -76,14 +68,6 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
     assert (np.isnan(log_diff) == False).all()
 
     log_cumsum = np.cumsum(log_diff, axis=1)
-    """
-    for i in range(10):
-      
-        plt.plot(log_cumsum[i])
-        plt.plot(terminations[i], log_cumsum[i, int(terminations[i])], "ro")
-        print(log_cumsum[i, terminations[i]])
-    plt.show()
-    """
    
     colors =  plt.cm.tab20(np.linspace(0, 1, len(np.unique(behavior_agent_names)))) #plt.cm.tab20(np.linspace(0, 1, len(np.unique(behavior_agent_names))))
     unique_agents = np.unique(behavior_agent_names)
@@ -306,12 +290,12 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
 
 """
 Start of the actual IS method implementations
-Each method has the following parameters:
-@param log_diff: the log difference between the target and behavior policy
-@param terminations: the termination timesteps
-@param rewards: the rewards
+Each method has the following parameters, with N being the number of trajectories and T the number of timesteps:
+@param log_diff: the log difference between the target and behavior policy, shape (N, T)
+@param terminations: the integer termination timesteps, shape (N,)
+@param rewards: the rewards, shape (N,T)
+@param discount: the discount factor, float
 """
-
 
 def phwis_heuristic(log_diff, terminations, rewards, discount):
     return phwis(log_diff, terminations, rewards, discount, heuristic=True)
@@ -467,11 +451,6 @@ def cobs_wis(log_diff, terminations, rewards, discount):
     return np.sum(probs * rewards_sum).astype(np.float32)
 
 def wis_extended(log_diff, terminations, rewards, discount):
-    print(log_diff.shape)
-    print(terminations.shape)
-    print(terminations)
-    print(rewards.shape)
-    print(discount)
     log_diff = log_diff.astype(np.longfloat)
     log_cumsum = np.cumsum(log_diff, axis=1)
     prob_cumprod = np.exp(log_cumsum)
@@ -485,11 +464,6 @@ def wis_extended(log_diff, terminations, rewards, discount):
 
 def step_wis(log_diff, terminations, rewards, discount):
     # cast to float 64
-    print(log_diff.shape)
-    print(terminations.shape)
-    print(terminations)
-    print(rewards.shape)
-    print(discount)
     log_diff = log_diff.astype(np.longfloat)
     log_cumsum = np.cumsum(log_diff, axis=1)
     prob_cumprod = np.exp(log_cumsum)
