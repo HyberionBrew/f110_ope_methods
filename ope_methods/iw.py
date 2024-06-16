@@ -58,30 +58,23 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
     """
     Terminations are inclusive
     """
-    
-    #behavior_log = np.clip(behavior_log, -7, 2)
-    #target_log = np.clip(target_log, -7, 2)
-    #print(behavior_log.shape)
-    #print(target_log.shape)
-    # set all rewards to zero after termination
+
     rewards = to_equal_length_value(rewards, terminations, 0.0)
 
     log_diff = target_log - behavior_log
     # assert no nans in logdiff
     assert (np.isnan(log_diff) == False).all()
 
-    #log_diff[log_diff > 0] = 0
-    # log_diff = to_equal_length_value(log_diff, terminations, 0.0)
+
     if fill_type=="mean":
         log_diff = to_equal_length_mean(log_diff, terminations, 15)
     if fill_type=="zero":
         log_diff = to_equal_length_value(log_diff, terminations, 0.0)
     if fill_type =="minus_inf":
         log_diff = to_equal_length_value(log_diff, terminations, -np.inf)
-    # no nans
+
     assert (np.isnan(log_diff) == False).all()
-    # print first 10 terminations
-    # print(terminations[:10])
+
     log_cumsum = np.cumsum(log_diff, axis=1)
     """
     for i in range(10):
@@ -91,30 +84,11 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         print(log_cumsum[i, terminations[i]])
     plt.show()
     """
-    #exit()
-    # add the discount sum in the log space
-    # 0.99**i
-    # discount_sum = np.log(discount ** np.arange(behavior_log.shape[1]))
-    #print(np.min(terminations))
-    #plt.plot(log_diff[10])
-    #plt.plot(log_diff[0])
-    #plt.show()
-    # handle early terminations, by using the average
-    
-
-    # for each model plot the log_diff
-    
-    
-    
-    #for i in range(log_cumsum.shape[0]):
-    #    plt.plot(log_cumsum[i])
-    #plt.show()
-    # colors like np.unique number
-    #print("======")
+   
     colors =  plt.cm.tab20(np.linspace(0, 1, len(np.unique(behavior_agent_names)))) #plt.cm.tab20(np.linspace(0, 1, len(np.unique(behavior_agent_names))))
     unique_agents = np.unique(behavior_agent_names)
     color_map = {agent: colors[i] for i, agent in enumerate(unique_agents)}
-    if False:
+    if False: # used for creating plots in the thesis
         plt.figure() #figsize=(15, 10))
         break_at = 10
        
@@ -254,14 +228,13 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         
     # since we have very large sums of logprobs, the weighted importance sampling 
     # simply degenerates into being ~1 at the closest trajectory and zero elsewhere.
-    starts_eval = starts_eval_[:, :2] # only need x and yq
+    starts_eval = starts_eval_[:, :2] # only need x and y
     starts = starts_[:, :2]
     # plot all starts 
     #plt.scatter(starts[:, 0], starts[:, 1])
     #plt.scatter(starts_eval[:, 0], starts_eval[:, 1])
     #plt.legend(["Training Starts", "Evaluation Starts"])
     #plt.show()
-    # we have multiple start cluster, assert that in each start cluster there is the same number of starting points
     reward = 0
     num_rewards = 0
     picked_agents = []
@@ -270,31 +243,28 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         # compute the distance to all starting points
         distances = np.linalg.norm(starts - start, axis=1)
         # print the closest 10 starts 
-        #print(np.argsort(distances))
+        # print(np.argsort(distances))
         # if there are less than 5 close starting points, we drop it
         if len(np.where(distances < start_distance)[0])<5:
-            #print(np.sum(distances < start_distance))
-            #print("Smallest distances", np.sort(distances)[:10])
+            # this never happens in our dataset
             #plt.scatter(starts[:, 0], starts[:, 1])
             #plt.scatter(starts_eval[:, 0], starts_eval[:, 1])
             #plt.scatter(start[0], start[1], color="red")
             #plt.legend(["Training Starts", "Evaluation Starts", "in question"])
             #plt.show()
-            raise ValueError("Not enough close starting points")
+            raise ValueError("Not enough close starting points") 
         else:
             if len(np.where(distances < start_distance)[0]) < 10:
                 print(f"Found {len(np.where(distances < start_distance)[0])} starting points")
         # all starting points that are closer than start distance are considered
         close_points_idx = np.where(distances < start_distance)[0]
-        #print("Close points", len(close_points_idx))
-        # for each of the close point find we dont need the check
+        
         if iw_type == "step_wis":
             is_fn = step_wis
-        elif iw_type == "step_wis_termination":
+        elif iw_type == "step_wis_termination": # this is TPDWIS
             is_fn = step_wis_termination
         elif iw_type == "wis_termination":
             pass
-            # is_fn = wis_termination
         elif iw_type == "simple_is":
             is_fn = simple_is
         elif iw_type == "simple_step_is":
@@ -313,10 +283,9 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
         
         if model is not None and start_scans is not None and get_actions is not None:
             complete_offset = 0
-            # complete_offset2 = 0
+
             samples = 20
-            #print(len(starts_[close_points_idx]))
-            #print(len(start_scans[close_points_idx]))
+
             for i in range(samples):
                 normed_starts = normalize_states(torch.tensor(starts_[close_points_idx]))
                 actions_eval = get_actions(normed_starts, 
@@ -324,62 +293,26 @@ def ImportanceSamplingContinousStart(behavior_log, target_log, behavior_agent_na
                                             deterministic=False)
                 eval_starts = normalize_states(torch.tensor(starts_eval_[starting_idx]).unsqueeze(0))
 
-                #action_test = get_actions(eval_starts,deterministic=True)
-
                 offset, std_offset = model.estimate_returns(normed_starts.cuda(), torch.tensor(actions_eval).cuda())
-                #offset2, std_offset = model.estimate_returns(eval_starts.cuda(), torch.tensor(action_test).cuda())
-                
+
                 complete_offset += offset.cpu().detach().numpy()
-                # this was for testing only
-                #complete_offset2 += offset2.cpu().detach().numpy()
             discounted_reward += complete_offset / samples
-            #print(complete_offset2 / samples)
-            #print(complete_offset / samples)
-        #print(max_log_sum)
-        #print(max_log_sum_point)
-        #plt.plot(rewards[max_log_sum_point])
-        #plt.show()
-        # discounted_reward = 1#np.sum(rewards[max_log_sum_point] * discount ** np.arange(rewards[max_log_sum_point].shape[0]))
-        #print(discounted_reward)
-        
         reward += discounted_reward
         num_rewards += 1
-        #picked_agents.append(behavior_agent_names[max_log_sum_point])
-        # print("closest agent is:", behavior_agent_names[max_log_sum_point])
-    # print(reward)
+
 
     reward = reward / num_rewards
-    #print(f"Reward for agent: {reward}")
-    print(f"Agents: {np.unique(np.array(picked_agents), return_counts=True)}")
     return reward
 
-        # plot the closest 10 starts
-        # plot all within the start distance
-        #plt.scatter(starts[distances < start_distance, 0], starts[distances < start_distance, 1])
-        # plt.scatter(starts[np.argsort(distances)[:10], 0], starts[np.argsort(distances)[:10], 1])
-        # plot the current start
-        #plt.scatter(start[0], start[1], color="red")
-        #plt.show()
 """
-# this implementation does n
-def step_wis(log_diff, terminations, rewards, discount, fill_value=0.0):
-    # cast to float 64
-    log_diff = log_diff.astype(np.longfloat)
-    prob_cumprod = np.exp(np.cumsum(to_equal_length_value(log_diff, terminations, fill_value), axis=1))
-    ws = np.sum(prob_cumprod, axis=0)
-    #print(log_cumsum.dtype)
-    assert np.isclose(np.sum(prob_cumprod/ws, axis=0).all(),1.0)
-    acc_rewards = np.zeros(prob_cumprod.shape[1]) # like timesteps
-    for trajectory_idx in range(prob_cumprod.shape[0]):
-            # for each timestep, calculate the probability
-            print(prob_cumprod[trajectory_idx]/ws[trajectory_idx])
-            print(prob_cumprod[trajectory_idx])
-            print(ws[trajectory_idx])
-            acc_rewards[:int(terminations[trajectory_idx]+1)] += (prob_cumprod[trajectory_idx]/ws[trajectory_idx])[:int(terminations[trajectory_idx] + 1)] * rewards[trajectory_idx, :int(terminations[trajectory_idx] + 1)] * discount ** np.arange(int(terminations[trajectory_idx] + 1))
-    plt.plot(acc_rewards)
-    plt.show()
-    return np.sum(acc_rewards)
+Start of the actual IS method implementations
+Each method has the following parameters:
+@param log_diff: the log difference between the target and behavior policy
+@param terminations: the termination timesteps
+@param rewards: the rewards
 """
+
+
 def phwis_heuristic(log_diff, terminations, rewards, discount):
     return phwis(log_diff, terminations, rewards, discount, heuristic=True)
 
@@ -534,6 +467,11 @@ def cobs_wis(log_diff, terminations, rewards, discount):
     return np.sum(probs * rewards_sum).astype(np.float32)
 
 def wis_extended(log_diff, terminations, rewards, discount):
+    print(log_diff.shape)
+    print(terminations.shape)
+    print(terminations)
+    print(rewards.shape)
+    print(discount)
     log_diff = log_diff.astype(np.longfloat)
     log_cumsum = np.cumsum(log_diff, axis=1)
     prob_cumprod = np.exp(log_cumsum)
@@ -547,6 +485,11 @@ def wis_extended(log_diff, terminations, rewards, discount):
 
 def step_wis(log_diff, terminations, rewards, discount):
     # cast to float 64
+    print(log_diff.shape)
+    print(terminations.shape)
+    print(terminations)
+    print(rewards.shape)
+    print(discount)
     log_diff = log_diff.astype(np.longfloat)
     log_cumsum = np.cumsum(log_diff, axis=1)
     prob_cumprod = np.exp(log_cumsum)
@@ -568,84 +511,3 @@ def step_wis(log_diff, terminations, rewards, discount):
             acc_rewards[timestep] += trajectory_probs[trajectory_idx, timestep] * rewards[trajectory_idx, timestep] * discount**timestep
     # here we return the sum, normalization already happened with the weights
     return np.sum(acc_rewards).astype(np.float32)
-
-
-
-"""
-def wis(log_diff, terminations, rewards, discount):
-    log_diff = log_diff.astype(np.longfloat)
-    # print(log_diff.shape)
-    log_cumsum = np.cumsum(log_diff, axis=1)
-    #print(log_cumsum.dtype)
-    prob_cumprod = np.exp(log_cumsum)
-    prob = np.zeros(log_diff.shape[0])
-    for trajectory_idx in range(prob_cumprod.shape[0]):
-        # for each timestep, calculate the probability
-        weight = np.sum(np.sort(prob_cumprod[:, int(terminations[trajectory_idx])]))
-        prob[trajectory_idx] = prob_cumprod[trajectory_idx, int(terminations[trajectory_idx])] / weight
-"""
-"""
-def wis(log_diff, terminations, rewards, discount):
-    # we have the log_cumsum, the terminations and the rewards
-    
-    rewards_sum = np.zeros(log_diff.shape[0])
-    # Create 2 subplots: one for log_cumsum and another for probabilities
-    fig, axs = plt.subplots(4, 1, figsize=(10, 8)) # 2 rows, 1 column. Adjust figsize as needed
-    log_cumsum = np.cumsum(log_diff, axis=1)
-    print(log_cumsum)
-    # Plot log_cumsum up to termination points in the first subplot
-    for i in range(log_diff.shape[0]):
-        axs[0].plot(log_cumsum[i,:int(terminations[i])], color="blue")
-        rewards_sum[i] = np.sum(rewards[i, :int(terminations[i] + 1)] * discount ** np.arange(int(terminations[i] + 1)))
-
-    # Calculate probabilities
-    
-    normalization_weight = np.zeros(log_cumsum.shape[0])
-    probs = np.zeros(log_diff.shape[0])
-    trajectory_prob = np.zeros(log_diff.shape[0])
-    for i in range(log_diff.shape[0]):
-
-        probs[i] = np.exp(log_cumsum[i, int(terminations[i])])
-        # there is at least one trajectory which has a non zero probability, before floating point errors
-        assert(log_cumsum[:, int(terminations[i])].any() != - np.inf)
-        normalization_weight[i] = np.sum(np.sort(np.exp(log_cumsum[:, int(terminations[i])]))) / log_diff.shape[0]
-        assert(normalization_weight[i] != 0)
-        trajectory_prob[i] = probs[i]/normalization_weight[i]
-        print(trajectory_prob[i])
-    # axs[3].plot(prob/normalization_weight[:, int(terminations[i])-1])
-    # filter all zeros from prob and the same indicies from normalization_weight
-
-    axs[2].plot(normalization_weight) 
-    print(normalization_weight.shape)
-    #norm_prob = np.array([ prob / normalization_weight[int(terminations[i])-1] for i, prob in enumerate(probs)])
-    norm_prob = probs/normalization_weight 
-    largest_prob = np.max(norm_prob)
-    # print(f"Largest probability: {largest_prob}")
-    print(f"Largest probabilities: {np.sort(norm_prob)[::-1][:4]}")
-    print("Indices of the 5 largest probabilities: ", np.argsort(norm_prob)[::-1][:5])
-    print(np.where(norm_prob > largest_prob * 0.1)[0])
-    
-    for i in np.where(norm_prob > largest_prob * 0.1)[0]:
-        axs[0].plot(log_cumsum[i, :int(terminations[i])], color="orange")
-
-    #for i in np.argsort(norm_prob)[::-1][:5]:
-    #    axs[0].plot(log_cumsum[i, :int(terminations[i])], color="red")
-    #    print(f"Probability: {norm_prob[i]}, prob: {prob[i]}, norm: {normalization_weight[int(terminations[i])-1]}")
-    
-    # Plot the probabilities in the second subplot
-    axs[1].bar(np.arange(len(probs)), probs, color='green')
-    axs[1].set_title("Probabilities at Termination Points")
-    axs[1].set_xlabel("Sequence Index")
-    axs[1].set_ylabel("Probability")
-
-    # Setting titles for clarity
-    axs[0].set_title("Log Cumulative Sum up to Termination")
-    axs[0].set_xlabel("Step")
-    axs[0].set_ylabel("Log Cumsum")
-
-    # Adjust layout for better spacing
-    plt.tight_layout()
-
-    # Show plot
-    plt.show()
-"""
