@@ -72,9 +72,9 @@ class F110Dataset(Dataset):
         # now we need to do next states and next scans
         # first check where timeout and where terminal
         finished = np.logical_or(d4rl_dataset['terminals'], d4rl_dataset['timeouts'])
-        print(np.sum(d4rl_dataset['terminals']))
-        print(np.sum(d4rl_dataset['timeouts']))
-        print("..")
+        #print(np.sum(d4rl_dataset['terminals']))
+        #print(np.sum(d4rl_dataset['timeouts']))
+        #print("..")
         self.finished = finished
         # rolled finished to the right by 1
         finished = torch.from_numpy(finished)
@@ -213,7 +213,7 @@ class F110Dataset(Dataset):
         self.scans_next = self.scans_next[indices]
         self.rewards_next = self.rewards_next[indices]
         # recompute the initial states, based on the new finished indices
-        print(self.finished.shape)
+        #print(self.finished.shape)
         finished_indices = np.where(self.finished)[0]
         self.inital_states = torch.zeros((len(finished_indices), self.states.shape[-1]))
         self.initial_scans = torch.zeros((len(finished_indices), self.scans.shape[-1]))
